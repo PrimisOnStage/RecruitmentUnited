@@ -218,6 +218,38 @@ def get_candidates(skill: str = None, location: str = None, country: str = None,
              "role":r[5],"exp":r[6],"skills":r[7],
              "stage":r[8],"source":r[9]} for r in rows]
 
+
+@app.get("/candidates/{id}")
+def get_candidate(id: int):
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute(
+        '''
+        SELECT id, name, email, phone, location, "current_role",
+               experience_years, skills, stage, source, source_metadata
+        FROM candidates WHERE id = %s
+    ''',
+        (id,),
+    )
+    r = cur.fetchone()
+    cur.close()
+    conn.close()
+    if not r:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+    return {
+        "id": r[0],
+        "name": r[1],
+        "email": r[2],
+        "phone": r[3],
+        "location": r[4],
+        "role": r[5],
+        "exp": r[6],
+        "skills": r[7],
+        "stage": r[8],
+        "source": r[9],
+        "source_metadata": r[10],
+    }
+
 @app.patch("/candidates/{id}/stage")
 async def update_stage(id: int, stage: str):
     candidate = _get_candidate_by_id(id)
