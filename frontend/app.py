@@ -93,11 +93,32 @@ if page == "📋 Candidates":
         st.markdown("<br>", unsafe_allow_html=True)
         st.button("🔍 Search", use_container_width=True)
 
-    candidates = fetch_candidates(
-        skill=skill_filter or None,
-        location=location_filter or None,
-        min_exp=exp_filter if exp_filter > 0 else None,
-    )
+    # Semantic search bar
+    st.markdown("#### Natural language search")
+    col_search, col_btn = st.columns([4, 1])
+    with col_search:
+        nl_query = st.text_input(
+            "Search by meaning",
+            placeholder="e.g. backend engineer with startup experience",
+            label_visibility="collapsed"
+        )
+    with col_btn:
+        nl_search_btn = st.button("Search", use_container_width=True)
+
+    # Use semantic results if NL query provided, else use SQL filters
+    if nl_query:
+        try:
+            r = requests.get(f"{API_URL}/search", params={"q": nl_query, "limit": 20})
+            candidates = r.json()
+            st.caption(f"Semantic search results for: _{nl_query}_")
+        except Exception:
+            candidates = []
+    else:
+        candidates = fetch_candidates(
+            skill=skill_filter or None,
+            location=location_filter or None,
+            min_exp=exp_filter if exp_filter > 0 else None,
+        )
 
     st.markdown(f"**{len(candidates)} candidates found**")
     st.markdown("---")
@@ -125,6 +146,9 @@ if page == "📋 Candidates":
                 with r3:
                     exp = candidate.get("exp", 0) or 0
                     st.markdown(f"**{exp} yrs** experience")
+                    # Show score if from semantic search
+                    if candidate.get("score"):
+                        st.caption(f"Match score: {candidate.get('score'):.0%}")
                     stage = candidate.get("stage", "applied")
                     st.markdown(
                         f'<span style="background:{stage_color(stage)};color:white;'

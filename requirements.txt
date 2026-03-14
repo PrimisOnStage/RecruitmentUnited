@@ -11,4 +11,6 @@ streamlit
 streamlit-option-menu
 pandas
 requests
+pinecone
+sentence-transformers
 
