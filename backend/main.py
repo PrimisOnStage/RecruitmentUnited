@@ -7,6 +7,7 @@ sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from database import get_connection, init_db
 from ingest.resume import parse_resume
 from ingest.linkedin import parse_linkedin_profile
+from ingest.gmail import fetch_all_gmail_candidates
 from models import LinkedInIngestSchema
 from dotenv import load_dotenv
 from integrations.bamboohr import create_employee, employee_exists_by_email, sync_bamboo_candidates
@@ -127,6 +128,65 @@ def ingest_linkedin(payload: LinkedInIngestSchema):
         "source": "linkedin",
         "name": data.get("name"),
         "skills": data.get("skills"),
+    }
+
+
+@app.post("/ingest/gmail")
+def ingest_gmail():
+    candidates = fetch_all_gmail_candidates()
+
+    inserted = 0
+    updated = 0
+
+    conn = get_connection()
+    cur = conn.cursor()
+
+    for data in candidates:
+        if not data.get("email"):
+            continue
+
+        source_metadata = data.get("source_metadata") or {}
+        cur.execute(
+            """
+            INSERT INTO candidates
+                (name, email, phone, country, location, "current_role",
+                 experience_years, skills, source, raw_text, source_metadata)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+            ON CONFLICT (email) DO UPDATE SET
+                skills = EXCLUDED.skills,
+                raw_text = EXCLUDED.raw_text,
+                source_metadata = candidates.source_metadata || EXCLUDED.source_metadata
+            RETURNING (xmax = 0) AS is_insert
+        """,
+            (
+                data.get("name"),
+                data.get("email"),
+                data.get("phone"),
+                data.get("country"),
+                data.get("location"),
+                data.get("current_role"),
+                data.get("experience_years"),
+                data.get("skills"),
+                data.get("source"),
+                data.get("raw_text"),
+                json.dumps(source_metadata),
+            ),
+        )
+        is_insert = cur.fetchone()[0]
+        if is_insert:
+            inserted += 1
+        else:
+            updated += 1
+
+    conn.commit()
+    cur.close()
+    conn.close()
+
+    return {
+        "status": "success",
+        "inserted": inserted,
+        "updated": updated,
+        "total": len(candidates),
     }
 
 @app.get("/candidates")
