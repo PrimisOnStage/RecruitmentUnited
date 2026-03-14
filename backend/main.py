@@ -8,6 +8,7 @@ from ingest.resume import parse_resume
 from ingest.linkedin import parse_linkedin_profile
 from models import LinkedInIngestSchema
 from dotenv import load_dotenv
+from integrations.bamboohr import sync_bamboo_candidates
 
 load_dotenv()
 app = FastAPI(title="Recruitment Platform API")
@@ -134,4 +135,9 @@ def update_stage(id: int, stage: str):
     cur.close()
     conn.close()
     return {"status": "updated"}
+
+@app.post("/integrations/bamboohr/sync")
+async def bamboo_sync():
+    await sync_bamboo_candidates(_upsert_candidate)
+    return {"status": "synced"}
 
