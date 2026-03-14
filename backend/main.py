@@ -1,14 +1,15 @@
-from fastapi import Depends, FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile, json, os, sys
 from psycopg2.extras import RealDictCursor
+import httpx
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 from database import get_connection, init_db
 from ingest.resume import parse_resume
 from ingest.linkedin import parse_linkedin_profile
 from models import LinkedInIngestSchema
 from dotenv import load_dotenv
-from integrations.bamboohr import sync_bamboo_candidates
+from integrations.bamboohr import create_employee, employee_exists_by_email, sync_bamboo_candidates
 
 load_dotenv()
 app = FastAPI(title="Recruitment Platform API")
@@ -71,6 +72,37 @@ def _upsert_candidate(data: dict) -> int:
     conn.close()
     return candidate_id
 
+
+def _get_candidate_by_id(candidate_id: int) -> dict | None:
+    conn = get_connection()
+    cur = conn.cursor(cursor_factory=RealDictCursor)
+    cur.execute(
+        'SELECT id, name, email, source, stage, "current_role" FROM candidates WHERE id=%s',
+        (candidate_id,),
+    )
+    row = cur.fetchone()
+    cur.close()
+    conn.close()
+    return row
+
+
+async def _push_candidate_to_hrms(candidate: dict):
+    email = candidate.get("email")
+    if not email:
+        raise HTTPException(status_code=422, detail="Candidate email is required for HRMS sync")
+
+    if candidate.get("source") == "bamboohr":
+        raise HTTPException(status_code=409, detail="Candidate originated from BambooHR")
+
+    try:
+        if await employee_exists_by_email(email):
+            raise HTTPException(status_code=409, detail="Employee already exists in BambooHR")
+        return await create_employee(candidate)
+    except HTTPException:
+        raise
+    except (ValueError, httpx.HTTPError) as exc:
+        raise HTTPException(status_code=502, detail=f"BambooHR sync failed: {exc}") from exc
+
 @app.post("/ingest/resume")
 async def ingest_resume(file: UploadFile = File(...)):
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
@@ -127,7 +159,22 @@ def get_candidates(skill: str = None, location: str = None, country: str = None,
              "stage":r[8],"source":r[9]} for r in rows]
 
 @app.patch("/candidates/{id}/stage")
-def update_stage(id: int, stage: str):
+async def update_stage(id: int, stage: str):
+    candidate = _get_candidate_by_id(id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    normalized_stage = (stage or "").strip().lower()
+    previous_stage = (candidate.get("stage") or "").strip().lower()
+    should_sync_hire = (
+        normalized_stage == "hired"
+        and previous_stage != "hired"
+        and candidate.get("source") != "bamboohr"
+    )
+
+    if should_sync_hire:
+        await _push_candidate_to_hrms(candidate)
+
     conn = get_connection()
     cur = conn.cursor()
     cur.execute("UPDATE candidates SET stage=%s WHERE id=%s", (stage, id))
@@ -135,6 +182,16 @@ def update_stage(id: int, stage: str):
     cur.close()
     conn.close()
     return {"status": "updated"}
+
+
+@app.post("/integrations/bamboohr/push/{id}")
+async def push_candidate_to_bamboohr(id: int):
+    candidate = _get_candidate_by_id(id)
+    if not candidate:
+        raise HTTPException(status_code=404, detail="Candidate not found")
+
+    result = await _push_candidate_to_hrms(candidate)
+    return {"status": "synced", "candidate_id": id, "bamboohr": result}
 
 @app.post("/integrations/bamboohr/sync")
 async def bamboo_sync():
