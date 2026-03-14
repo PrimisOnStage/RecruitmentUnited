@@ -1,13 +1,24 @@
+"""Streamlit frontend for browsing, comparing, and ingesting candidates.
+
+The UI is intentionally thin: it delegates business logic to the FastAPI backend
+and focuses on recruiter-friendly workflows such as search, profile review,
+pipeline management, and ingestion triggers.
+"""
+
+import os
+
 import requests
 import streamlit as st
 
-API_URL = "http://127.0.0.1:8000"
+# In Docker Compose this is injected as `http://api:8000`; locally it falls back
+# to the developer's loopback address.
+API_URL = os.getenv("API_URL", "http://127.0.0.1:8000")
 STAGES = ["applied", "screening", "interview", "offer", "hired", "rejected"]
 
 st.set_page_config(page_title="Recruitment Platform", page_icon="👥", layout="wide")
 
 
-# Sidebar navigation
+# Sidebar navigation drives the app's five main recruiter workflows.
 st.sidebar.title("👥 Recruitment Platform")
 st.sidebar.markdown("---")
 page = st.sidebar.radio(
@@ -19,6 +30,7 @@ st.sidebar.markdown("---")
 
 
 def fetch_candidates(skill=None, location=None, min_exp=None):
+    """Fetch candidate list data from the backend with optional filters."""
     params = {}
     if skill:
         params["skill"] = skill
@@ -32,10 +44,12 @@ def fetch_candidates(skill=None, location=None, min_exp=None):
         response.raise_for_status()
         return response.json()
     except requests.RequestException:
+        # The UI degrades gracefully by showing an empty state instead of crashing.
         return []
 
 
 def fetch_candidate(candidate_id):
+    """Fetch one candidate profile by identifier."""
     try:
         response = requests.get(f"{API_URL}/candidates/{candidate_id}", timeout=20)
         response.raise_for_status()
@@ -45,6 +59,7 @@ def fetch_candidate(candidate_id):
 
 
 def update_stage(candidate_id, stage):
+    """Persist a pipeline stage change through the backend API."""
     try:
         response = requests.patch(
             f"{API_URL}/candidates/{candidate_id}/stage",
@@ -58,6 +73,7 @@ def update_stage(candidate_id, stage):
 
 
 def source_badge(source):
+    """Return a small emoji badge used to quickly identify a candidate source."""
     colors = {
         "resume": "🔵",
         "bamboohr": "🟢",
@@ -68,6 +84,7 @@ def source_badge(source):
 
 
 def stage_color(stage):
+    """Map stage names to the UI colors used across list/profile/kanban views."""
     colors = {
         "applied": "#888780",
         "screening": "#185FA5",
@@ -80,6 +97,7 @@ def stage_color(stage):
 
 
 if page == "📋 Candidates":
+    # Candidate list view: combine structured filters with semantic search.
     st.title("📋 All Candidates")
 
     col1, col2, col3, col4 = st.columns([2, 2, 1, 1])
@@ -93,7 +111,7 @@ if page == "📋 Candidates":
         st.markdown("<br>", unsafe_allow_html=True)
         st.button("🔍 Search", use_container_width=True)
 
-    # Semantic search bar
+    # Semantic search hits the Pinecone-backed endpoint instead of SQL filters.
     st.markdown("#### Natural language search")
     col_search, col_btn = st.columns([4, 1])
     with col_search:
@@ -105,7 +123,7 @@ if page == "📋 Candidates":
     with col_btn:
         nl_search_btn = st.button("Search", use_container_width=True)
 
-    # Use semantic results if NL query provided, else use SQL filters
+    # Prefer semantic search whenever the recruiter types a natural-language query.
     if nl_query:
         try:
             r = requests.get(f"{API_URL}/search", params={"q": nl_query, "limit": 20})
@@ -139,6 +157,7 @@ if page == "📋 Candidates":
                 with r2:
                     skills = candidate.get("skills") or []
                     if skills:
+                        # Keep cards compact by showing only the first few skills.
                         st.markdown(" ".join([f"`{skill}`" for skill in skills[:4]]))
                     else:
                         st.caption("No skills listed")
@@ -146,7 +165,7 @@ if page == "📋 Candidates":
                 with r3:
                     exp = candidate.get("exp", 0) or 0
                     st.markdown(f"**{exp} yrs** experience")
-                    # Show score if from semantic search
+                    # Search score only exists for semantic search responses.
                     if candidate.get("score"):
                         st.caption(f"Match score: {candidate.get('score'):.0%}")
                     stage = candidate.get("stage", "applied")
@@ -158,6 +177,7 @@ if page == "📋 Candidates":
 
                 with r4:
                     if st.button("View", key=f"view_{candidate['id']}"):
+                        # Session state lets the app jump directly to the selected profile.
                         st.session_state["selected_candidate"] = candidate["id"]
                         st.session_state["page_override"] = "👤 Profile"
                         st.rerun()
@@ -165,6 +185,7 @@ if page == "📋 Candidates":
                 st.markdown("---")
 
 elif page == "👤 Profile":
+    # Profile view: show one candidate in detail and allow stage updates.
     st.title("👤 Candidate Profile")
 
     all_candidates = fetch_candidates()
@@ -175,6 +196,7 @@ elif page == "👤 Profile":
             candidate["id"]: f"{candidate.get('name', 'Unknown')} ({candidate.get('source', '')})"
             for candidate in all_candidates
         }
+        # Reuse the last selected candidate when the user navigates here from another page.
         default_id = st.session_state.get("selected_candidate", all_candidates[0]["id"])
 
         selected_id = st.selectbox(
@@ -212,6 +234,7 @@ elif page == "👤 Profile":
 
                 metadata = candidate.get("source_metadata") or {}
                 if metadata:
+                    # Source-specific attributes are shown separately from the common profile fields.
                     st.markdown("### Source Metadata")
                     st.json(metadata)
 
@@ -237,6 +260,7 @@ elif page == "👤 Profile":
                 )
 
 elif page == "⚖️ Compare":
+    # Side-by-side comparison view for shortlist decisions.
     st.title("⚖️ Compare Candidates")
 
     all_candidates = fetch_candidates()
@@ -270,6 +294,7 @@ elif page == "⚖️ Compare":
             c1, c2 = st.columns(2)
 
             def render_profile(column, item):
+                """Render one compact candidate summary inside a comparison column."""
                 with column:
                     st.markdown(f"### {source_badge(item.get('source', ''))} {item.get('name', 'Unknown')}")
                     st.markdown(f"**Role:** {item.get('role', '—')}")
@@ -294,6 +319,7 @@ elif page == "⚖️ Compare":
 
             st.markdown("---")
             st.markdown("### Skill overlap")
+            # Set math makes overlap/differences easy to explain visually.
             skills_a = set(candidate_a.get("skills") or [])
             skills_b = set(candidate_b.get("skills") or [])
             common = skills_a & skills_b
@@ -312,6 +338,7 @@ elif page == "⚖️ Compare":
                 st.markdown(" ".join([f"`{skill}`" for skill in only_b]) if only_b else "_none_")
 
 elif page == "📌 Pipeline":
+    # Kanban-style view of the hiring funnel.
     st.title("📌 Recruitment Pipeline")
 
     all_candidates = fetch_candidates()
@@ -321,6 +348,7 @@ elif page == "📌 Pipeline":
         columns = st.columns(len(STAGES))
         for index, stage in enumerate(STAGES):
             with columns[index]:
+                # Group candidates client-side because the API currently returns a flat list.
                 stage_candidates = [candidate for candidate in all_candidates if candidate.get("stage") == stage]
                 st.markdown(
                     f'<div style="background:{stage_color(stage)};color:white;'
@@ -350,6 +378,7 @@ elif page == "📌 Pipeline":
                             st.rerun()
 
 elif page == "📥 Ingest":
+    # Ingestion page exposes the three backend-driven import workflows.
     st.title("📥 Ingest Candidates")
 
     tab1, tab2, tab3 = st.tabs(["📄 Resume Upload", "🏢 BambooHR", "📧 Gmail"])
@@ -359,6 +388,7 @@ elif page == "📥 Ingest":
         uploaded = st.file_uploader("Choose a PDF file", type=["pdf"])
         if uploaded and st.button("Parse & Ingest", use_container_width=True):
             with st.spinner("Parsing resume with LlamaExtract..."):
+                # The backend expects multipart form upload under the `file` field.
                 files = {"file": (uploaded.name, uploaded.getvalue(), "application/pdf")}
                 response = requests.post(f"{API_URL}/ingest/resume", files=files, timeout=120)
                 if response.status_code == 200:
@@ -374,6 +404,7 @@ elif page == "📥 Ingest":
         st.caption("Fetches all active employees from your BambooHR account")
         if st.button("🔄 Sync BambooHR", use_container_width=True):
             with st.spinner("Connecting to BambooHR..."):
+                # This delegates all paging/auth/upsert logic to the backend sync route.
                 response = requests.post(f"{API_URL}/integrations/bamboohr/sync", timeout=120)
                 if response.status_code == 200:
                     data = response.json()
@@ -388,6 +419,7 @@ elif page == "📥 Ingest":
         st.caption("Fetches last 20 emails with PDF attachments from your inbox")
         if st.button("📧 Sync Gmail", use_container_width=True):
             with st.spinner("Connecting to Gmail..."):
+                # Gmail sync can take longer because it downloads attachments and parses PDFs.
                 response = requests.post(f"{API_URL}/ingest/gmail", timeout=120)
                 if response.status_code == 200:
                     data = response.json()

@@ -1,3 +1,13 @@
+"""Gmail ingestion pipeline for harvesting resume attachments from email.
+
+The flow is:
+1. authenticate with the Gmail API,
+2. search recent emails that likely contain PDF resumes,
+3. score each message to avoid unrelated PDFs,
+4. download the attachment temporarily, and
+5. reuse the resume parser to produce candidate records.
+"""
+
 import base64
 import os
 import re
@@ -11,7 +21,10 @@ from google.oauth2.credentials import Credentials
 from google_auth_oauthlib.flow import InstalledAppFlow
 from googleapiclient.discovery import build
 
-from ingest.resume import parse_resume
+try:
+    from backend.ingest.resume import parse_resume
+except ImportError:
+    from ingest.resume import parse_resume
 
 SCOPES = ["https://www.googleapis.com/auth/gmail.readonly"]
 
@@ -49,6 +62,7 @@ NEGATIVE_KEYWORDS = {
 
 
 def _score_resume_likelihood(subject: str, sender: str, snippet: str, filename: str) -> tuple[float, list[str]]:
+    """Heuristically score whether a Gmail message likely contains a real resume."""
     score = 0.0
     reasons = []
 
@@ -79,7 +93,7 @@ def _score_resume_likelihood(subject: str, sender: str, snippet: str, filename: 
             score -= 2.0
             reasons.append(f"filename_not_resume:{keyword}")
 
-    # Strong sender hints for recruiting pipelines.
+    # Recruiting mailbox names are weak but useful hints when content is ambiguous.
     if any(term in sender_l for term in ("recruit", "talent", "hiring", "careers", "jobs@")):
         score += 1.5
         reasons.append("sender:recruiting_hint")
@@ -88,6 +102,7 @@ def _score_resume_likelihood(subject: str, sender: str, snippet: str, filename: 
 
 
 def _iter_message_parts(parts: list[dict]) -> list[dict]:
+    """Flatten nested Gmail MIME parts so attachments are easy to inspect."""
     flattened = []
     stack = list(parts)
     while stack:
@@ -102,12 +117,15 @@ def get_gmail_service():
     creds = None
 
     if os.path.exists(TOKEN_FILE):
+        # Reuse a saved OAuth token when possible to avoid prompting every run.
         creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
 
     if not creds or not creds.valid:
         if creds and creds.expired and creds.refresh_token:
             creds.refresh(Request())
         else:
+            # Local OAuth flow is acceptable here because this project currently
+            # targets developer-operated ingestion rather than headless automation.
             flow = InstalledAppFlow.from_client_secrets_file(CREDENTIALS_FILE, SCOPES)
             creds = flow.run_local_server(port=0)
 
@@ -118,7 +136,7 @@ def get_gmail_service():
 
 
 def get_emails_with_attachments(service, max_results: int = 5) -> list:
-    """Search Gmail for emails with PDF attachments."""
+    """Search Gmail for candidate emails matching the configured attachment query."""
     results = service.users().messages().list(
         userId="me",
         q=GMAIL_QUERY,
@@ -132,6 +150,7 @@ def download_pdf_attachment(service, message_id: str) -> tuple[str | None, str, 
     Download PDF attachment from an email.
     Returns (file_path, sender_email, subject, filename, snippet, score, reasons).
     """
+    # Pull the full MIME payload because Gmail stores attachments on nested parts.
     message = service.users().messages().get(userId="me", id=message_id, format="full").execute()
 
     headers = message.get("payload", {}).get("headers", [])
@@ -155,6 +174,7 @@ def download_pdf_attachment(service, message_id: str) -> tuple[str | None, str, 
             data = base64.urlsafe_b64decode(attachment["data"])
             score, reasons = _score_resume_likelihood(subject, sender, snippet, filename)
 
+            # Write to a temp file because the existing resume parser expects a path.
             tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".pdf", prefix="gmail_resume_")
             tmp.write(data)
             tmp.close()
@@ -182,6 +202,7 @@ def fetch_all_gmail_candidates() -> list[dict]:
             print(f"No PDF found in email {message_id} - skipping")
             continue
 
+        # Heuristic filtering avoids wasting extraction calls on invoices/brochures.
         if score < RESUME_SCORE_THRESHOLD:
             print(
                 f"Skipping email {message_id} - resume score {score:.1f} below threshold "
@@ -194,13 +215,15 @@ def fetch_all_gmail_candidates() -> list[dict]:
         try:
             data = parse_resume(pdf_path)
 
+            # When the resume omits an email address, fall back to the sender address.
             if not data.get("email") and sender:
-                match = re.search(r"[\w\.-]+@[\w\.-]+", sender)
+                match = re.search(r"[\w.-]+@[\w.-]+", sender)
                 if match:
                     data["email"] = match.group(0)
 
             data["source"] = "gmail"
             data["source_metadata"] = data.get("source_metadata", {})
+            # Preserve Gmail-specific audit details separately from the main candidate fields.
             data["source_metadata"]["gmail_message_id"] = message_id
             data["source_metadata"]["email_subject"] = subject
             data["source_metadata"]["sender"] = sender
@@ -219,6 +242,7 @@ def fetch_all_gmail_candidates() -> list[dict]:
             print(f"Failed to parse PDF from email {message_id}: {exc}")
 
         finally:
+            # Always clean up temporary PDFs so repeated syncs do not leak files.
             if pdf_path and os.path.exists(pdf_path):
                 os.unlink(pdf_path)
 

@@ -1,3 +1,10 @@
+"""BambooHR integration helpers for pulling employees and pushing hires.
+
+This module hides BambooHR-specific authentication and payload formats from the
+rest of the application. The API layer passes around candidate dictionaries, and
+these helpers translate them into BambooHR requests/responses.
+"""
+
 import os
 import httpx
 
@@ -9,6 +16,7 @@ BASE_URL = f"https://{BAMBOO_DOMAIN}.bamboohr.com/api/v1"
 
 
 def _auth_and_headers() -> tuple[tuple[str, str] | None, dict]:
+    """Build BambooHR authentication settings from the configured credentials."""
     headers = {"Accept": "application/json"}
     auth = None
     if ACCESS_TOKEN:
@@ -21,6 +29,7 @@ def _auth_and_headers() -> tuple[tuple[str, str] | None, dict]:
 
 
 def _split_name(full_name: str | None) -> tuple[str, str]:
+    """Split a free-form full name into BambooHR first/last name fields."""
     if not full_name:
         return "", ""
     parts = full_name.strip().split()
@@ -30,9 +39,11 @@ def _split_name(full_name: str | None) -> tuple[str, str]:
 
 
 def _candidate_to_employee_payload(candidate: dict) -> dict:
+    """Convert an internal candidate record into the minimal BambooHR employee payload."""
     first_name = candidate.get("first_name")
     last_name = candidate.get("last_name")
 
+    # Most candidate records only store a full name, so derive first/last names lazily.
     if not first_name and not last_name:
         first_name, last_name = _split_name(candidate.get("name"))
 
@@ -48,6 +59,7 @@ def _candidate_to_employee_payload(candidate: dict) -> dict:
 
 
 async def get_employees_directory():
+    """Fetch the BambooHR employee directory used for sync and duplicate checks."""
     url = f"{BASE_URL}/employees/directory"
     auth, headers = _auth_and_headers()
 
@@ -59,6 +71,7 @@ async def get_employees_directory():
 
 
 async def get_employee(employee_id):
+    """Fetch one employee's full details from BambooHR."""
     url = f"{BASE_URL}/employees/{employee_id}"
     auth, headers = _auth_and_headers()
 
@@ -69,6 +82,7 @@ async def get_employee(employee_id):
         return res.json()
 
 def convert_employee_to_candidate(emp):
+    """Map a BambooHR employee record into the local candidate schema."""
     first = emp.get("firstName") or ""
     last = emp.get("lastName") or ""
     full_name = f"{first} {last}".strip() or None
@@ -82,9 +96,12 @@ def convert_employee_to_candidate(emp):
     }
 
 async def sync_bamboo_candidates(upsert_function):
+    """Mirror the BambooHR directory into PostgreSQL via the provided upsert callback."""
     employees = await get_employees_directory()
 
     for emp in employees:
+        # The directory endpoint is lightweight; fetch the fuller employee record
+        # before converting so we capture the latest profile data.
         full = await get_employee(emp["id"])
 
         candidate = convert_employee_to_candidate(full)
@@ -93,6 +110,7 @@ async def sync_bamboo_candidates(upsert_function):
 
 
 async def employee_exists_by_email(email: str | None) -> bool:
+    """Check for an existing BambooHR employee by normalized work email."""
     if not email:
         return False
 
@@ -106,6 +124,7 @@ async def employee_exists_by_email(email: str | None) -> bool:
 
 
 async def create_employee(candidate):
+    """Create a new BambooHR employee from a candidate record."""
     url = f"{BASE_URL}/employees"
 
     payload = _candidate_to_employee_payload(candidate)
@@ -117,6 +136,7 @@ async def create_employee(candidate):
     async with httpx.AsyncClient(timeout=20.0, auth=auth) as client:
         res = await client.post(url, json=payload, headers=headers)
 
+    # BambooHR may return either an empty body or a JSON payload on success.
     res.raise_for_status()
     if not res.content:
         return {"status": "created"}

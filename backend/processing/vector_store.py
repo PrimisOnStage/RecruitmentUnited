@@ -1,3 +1,9 @@
+"""Semantic search helpers backed by sentence-transformers and Pinecone.
+
+Candidate records are embedded locally, stored remotely in Pinecone, and then
+looked up by similarity for natural-language search in the frontend.
+"""
+
 import os
 from pinecone import Pinecone, ServerlessSpec
 from sentence_transformers import SentenceTransformer
@@ -8,7 +14,8 @@ load_dotenv()
 PINECONE_API_KEY  = os.getenv("PINECONE_API_KEY")
 INDEX_NAME        = os.getenv("PINECONE_INDEX_NAME", "recruitment-index")
 
-# Load embedding model once at startup (runs locally, no API cost)
+# Load the embedding model once at import time so repeated searches do not pay
+# model initialization cost on every request.
 print("Loading embedding model...")
 model = SentenceTransformer("all-MiniLM-L6-v2")
 print("Embedding model ready.")
@@ -18,6 +25,7 @@ pc = Pinecone(api_key=PINECONE_API_KEY)
 
 
 def _sanitize_metadata(metadata: dict | None) -> dict:
+    """Convert candidate metadata into Pinecone-safe scalar/string fields."""
     metadata = metadata or {}
 
     def _clean_scalar(value) -> str:
@@ -25,6 +33,8 @@ def _sanitize_metadata(metadata: dict | None) -> dict:
             return ""
         return str(value).strip()
 
+    # Pinecone metadata works best with simple scalar values, so list-like skills
+    # are flattened into a readable comma-separated string.
     raw_skills = metadata.get("skills")
     if isinstance(raw_skills, (list, tuple, set)):
         skills = ", ".join(
@@ -48,7 +58,8 @@ def get_or_create_index():
     target_index = INDEX_NAME
 
     if INDEX_NAME in existing:
-        # If an index already exists with a different dimension, switch to a compatible one.
+        # If an old index was created with a different embedding model dimension,
+        # create a compatible sibling index instead of failing at runtime.
         index_info = pc.describe_index(INDEX_NAME)
         existing_dim = getattr(index_info, "dimension", None)
         if existing_dim is None and isinstance(index_info, dict):
@@ -88,6 +99,7 @@ def index_candidate(candidate_id: int, raw_text: str, metadata: dict):
         return
 
     index     = get_or_create_index()
+    # The embedding vector is what drives semantic similarity during search.
     embedding = model.encode(raw_text).tolist()
     clean_metadata = _sanitize_metadata(metadata)
 
@@ -109,6 +121,8 @@ def search_candidates(query: str, top_k: int = 10) -> list[dict]:
         top_k=top_k,
         include_metadata=True
     )
+    # Return only the fields the API needs; PostgreSQL remains the source of truth
+    # for full candidate records.
     return [
         {
             "id":       match["id"],
@@ -133,6 +147,7 @@ def index_all_existing_candidates(conn):
 
     print(f"Indexing {len(rows)} existing candidates in Pinecone...")
     for r in rows:
+        # Reuse the single-candidate indexer so bulk and per-ingest flows stay consistent.
         index_candidate(
             candidate_id=r[0],
             raw_text=r[6],

@@ -24,6 +24,30 @@ cd backend
 python -m uvicorn main:app --reload --port 8000
 ```
 
+## Run With Docker
+Use Docker Compose from the repository root to run Postgres + API + Streamlit frontend.
+
+```powershell
+docker compose up --build
+```
+
+- API: `http://localhost:8000`
+- Frontend: `http://localhost:8501`
+
+Stop services:
+
+```powershell
+docker compose down
+```
+
+First-time env setup:
+
+```powershell
+Copy-Item .env.example .env
+```
+
+Then populate `.env` with valid provider/API credentials before starting.
+
 ## Gmail Ingest Notes
 - First call to `POST /ingest/gmail` opens a browser for Google OAuth consent.
 - After consent, a token is saved to `backend/token.json` and reused for later calls.

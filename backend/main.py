@@ -1,34 +1,74 @@
+"""Main FastAPI application for the recruitment platform backend.
+
+The API coordinates four major concerns:
+1. ingesting candidate data from resumes, LinkedIn, Gmail, and BambooHR,
+2. normalizing and storing candidates in PostgreSQL,
+3. indexing/searching candidates in Pinecone, and
+4. syncing hired candidates into BambooHR.
+"""
+
+from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 import tempfile, json, os, sys
 from psycopg2.extras import RealDictCursor
 import httpx
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
-from database import get_connection, init_db
-from ingest.resume import parse_resume
-from ingest.linkedin import parse_linkedin_profile
-from ingest.gmail import fetch_all_gmail_candidates
-from models import LinkedInIngestSchema
 from dotenv import load_dotenv
-from integrations.bamboohr import create_employee, employee_exists_by_email, sync_bamboo_candidates
-from processing.vector_store import index_candidate, search_candidates, index_all_existing_candidates
+
+try:
+    from backend.database import get_connection, init_db
+    from backend.ingest.resume import parse_resume
+    from backend.ingest.linkedin import parse_linkedin_profile
+    from backend.ingest.gmail import fetch_all_gmail_candidates
+    from backend.models import LinkedInIngestSchema
+    from backend.integrations.bamboohr import (
+        create_employee,
+        employee_exists_by_email,
+        sync_bamboo_candidates,
+    )
+    from backend.processing.vector_store import (
+        index_all_existing_candidates,
+        index_candidate,
+        search_candidates,
+    )
+except ImportError:
+    # Fallback for the existing local workflow that runs `uvicorn main:app` from
+    # inside the `backend` directory.
+    from database import get_connection, init_db
+    from ingest.resume import parse_resume
+    from ingest.linkedin import parse_linkedin_profile
+    from ingest.gmail import fetch_all_gmail_candidates
+    from models import LinkedInIngestSchema
+    from integrations.bamboohr import create_employee, employee_exists_by_email, sync_bamboo_candidates
+    from processing.vector_store import index_candidate, search_candidates, index_all_existing_candidates
 
 load_dotenv()
-app = FastAPI(title="Recruitment Platform API")
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Run one-time application startup work before serving requests."""
+    init_db()
+    yield
+
+
+app = FastAPI(title="Recruitment Platform API", lifespan=lifespan)
+
+# CORS is left wide open for local development and the Streamlit frontend.
 app.add_middleware(CORSMiddleware, allow_origins=["*"],
                    allow_methods=["*"], allow_headers=["*"])
 
-@app.on_event("startup")
-def startup():
-    init_db()
 
 @app.get("/")
 def root():
+    """Lightweight health endpoint used to verify the API is alive."""
     return {"status": "Recruitment API running"}
 
 
 def get_db():
+    """Yield a database connection for code paths that prefer generator-style usage."""
     conn = get_connection()
     try:
         yield conn
@@ -37,6 +77,7 @@ def get_db():
 
 
 def _build_filler_raw_text(data: dict) -> str:
+    """Create a fallback text blob so every candidate remains searchable/indexable."""
     skills = data.get("skills") or []
     skills_text = ", ".join([str(skill).strip() for skill in skills if str(skill).strip()])
     parts = [
@@ -52,6 +93,12 @@ def _build_filler_raw_text(data: dict) -> str:
 
 
 def _normalize_candidate_payload(data: dict) -> dict:
+    """Normalize partial candidate data into the shape expected by storage and search.
+
+    Each ingestion source returns slightly different fields. This helper fills in
+    safe defaults so downstream database inserts, semantic indexing, and UI views
+    can assume a consistent payload.
+    """
     payload = dict(data or {})
 
     def _clean_text(value, default=""):
@@ -140,11 +187,14 @@ def _fill_missing_candidate_values(conn) -> int:
 
 
 def _upsert_candidate(data: dict) -> int:
+    """Insert or update a candidate row using email as the stable dedupe key."""
     data = _normalize_candidate_payload(data)
     conn = get_connection()
     cur = conn.cursor()
     source_metadata = data.get("source_metadata") or {}
 
+    # Most sources represent the same real person; using email as the conflict key
+    # lets later ingests enrich existing rows instead of duplicating them.
     cur.execute("""
         INSERT INTO candidates
             (name, email, phone, country, location, "current_role",
@@ -177,6 +227,7 @@ def _upsert_candidate(data: dict) -> int:
 
 
 def _get_candidate_by_id(candidate_id: int) -> dict | None:
+    """Fetch a minimal candidate record used by stage updates and HR sync."""
     conn = get_connection()
     cur = conn.cursor(cursor_factory=RealDictCursor)
     cur.execute(
@@ -190,6 +241,7 @@ def _get_candidate_by_id(candidate_id: int) -> dict | None:
 
 
 async def _push_candidate_to_hrms(candidate: dict):
+    """Push an internal candidate into BambooHR after defensive validation."""
     email = candidate.get("email")
     if not email:
         raise HTTPException(status_code=422, detail="Candidate email is required for HRMS sync")
@@ -208,6 +260,9 @@ async def _push_candidate_to_hrms(candidate: dict):
 
 @app.post("/ingest/resume")
 async def ingest_resume(file: UploadFile = File(...)):
+    """Accept a resume PDF, parse it, store it, and index it for semantic search."""
+    # FastAPI gives us a file-like upload object; we persist it temporarily so the
+    # LlamaCloud client can read it from disk.
     with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
         tmp.write(await file.read())
         tmp_path = tmp.name
@@ -215,8 +270,12 @@ async def ingest_resume(file: UploadFile = File(...)):
         data = parse_resume(tmp_path)
     finally:
         os.unlink(tmp_path)
+
+    # Normalize before storage so every source lands in the same DB/search shape.
     data = _normalize_candidate_payload(data)
     candidate_id = _upsert_candidate(data)
+
+    # Semantic search relies on Pinecone metadata plus the text representation.
     index_candidate(
         candidate_id=candidate_id,
         raw_text=data.get("raw_text", ""),
@@ -234,6 +293,7 @@ async def ingest_resume(file: UploadFile = File(...)):
 
 @app.post("/ingest/linkedin")
 def ingest_linkedin(payload: LinkedInIngestSchema):
+    """Normalize a LinkedIn payload, upsert it, and index it in Pinecone."""
     data = parse_linkedin_profile(payload.model_dump())
     data = _normalize_candidate_payload(data)
     candidate_id = _upsert_candidate(data)
@@ -259,6 +319,7 @@ def ingest_linkedin(payload: LinkedInIngestSchema):
 
 @app.post("/ingest/gmail")
 def ingest_gmail():
+    """Fetch Gmail resume attachments, upsert candidates, and index them in bulk."""
     candidates = fetch_all_gmail_candidates()
 
     inserted = 0
@@ -267,7 +328,8 @@ def ingest_gmail():
     conn = get_connection()
     cur = conn.cursor()
 
-    ingested = []   # collect (candidate_id, data) for Pinecone indexing after commit
+    # Collect rows for indexing after the database transaction commits successfully.
+    ingested = []
 
     for data in candidates:
         data = _normalize_candidate_payload(data)
@@ -284,6 +346,7 @@ def ingest_gmail():
             ON CONFLICT (email) DO UPDATE SET
                 skills = EXCLUDED.skills,
                 raw_text = EXCLUDED.raw_text,
+                -- Gmail metadata is additive, so merge JSON blobs instead of replacing them.
                 source_metadata = candidates.source_metadata || EXCLUDED.source_metadata
             RETURNING id, (xmax = 0) AS is_insert
         """,
@@ -314,7 +377,7 @@ def ingest_gmail():
     cur.close()
     conn.close()
 
-    # Index all ingested candidates in Pinecone
+    # Index after commit so vector search never references rows that failed to persist.
     for candidate_id, data in ingested:
         index_candidate(
             candidate_id=candidate_id,
@@ -337,6 +400,7 @@ def ingest_gmail():
 
 @app.get("/candidates")
 def get_candidates(skill: str = None, location: str = None, country: str = None, min_exp: int = None):
+    """List candidates with optional exact-skill and partial text filters."""
     conn = get_connection()
     cur = conn.cursor()
     query = """SELECT id, name, email, country, location, "current_role",
@@ -344,6 +408,7 @@ def get_candidates(skill: str = None, location: str = None, country: str = None,
                FROM candidates WHERE 1=1"""
     params = []
     if skill:
+        # Skills are stored normalized/lowercase, so normalize the filter too.
         query += " AND %s = ANY(skills)"
         params.append(skill.lower())
     if location:
@@ -360,6 +425,8 @@ def get_candidates(skill: str = None, location: str = None, country: str = None,
     rows = cur.fetchall()
     cur.close()
     conn.close()
+
+    # Keep the API response shape compact and frontend-friendly.
     return [{"id":r[0],"name":r[1],"email":r[2],"country":r[3],"location":r[4],
              "role":r[5],"exp":r[6],"skills":r[7],
              "stage":r[8],"source":r[9]} for r in rows]
@@ -367,6 +434,7 @@ def get_candidates(skill: str = None, location: str = None, country: str = None,
 
 @app.get("/candidates/{id}")
 def get_candidate(id: int):
+    """Return the full profile view for a single candidate."""
     conn = get_connection()
     cur = conn.cursor()
     cur.execute(
@@ -398,6 +466,7 @@ def get_candidate(id: int):
 
 @app.patch("/candidates/{id}/stage")
 async def update_stage(id: int, stage: str):
+    """Update a candidate's pipeline stage and optionally sync a hire to BambooHR."""
     candidate = _get_candidate_by_id(id)
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -410,6 +479,7 @@ async def update_stage(id: int, stage: str):
         and candidate.get("source") != "bamboohr"
     )
 
+    # Treat the transition into `hired` as the moment to create the employee record.
     if should_sync_hire:
         await _push_candidate_to_hrms(candidate)
 
@@ -424,6 +494,7 @@ async def update_stage(id: int, stage: str):
 
 @app.post("/integrations/bamboohr/push/{id}")
 async def push_candidate_to_bamboohr(id: int):
+    """Manually push a specific candidate into BambooHR."""
     candidate = _get_candidate_by_id(id)
     if not candidate:
         raise HTTPException(status_code=404, detail="Candidate not found")
@@ -433,6 +504,7 @@ async def push_candidate_to_bamboohr(id: int):
 
 @app.post("/integrations/bamboohr/sync")
 async def bamboo_sync():
+    """Pull employees from BambooHR and mirror them into the candidate table."""
     await sync_bamboo_candidates(_upsert_candidate)
     return {"status": "synced"}
 
@@ -466,7 +538,8 @@ def semantic_search(q: str, limit: int = 10):
     if not q:
         return []
 
-    # Get ranked candidate IDs from Pinecone
+    # Ask Pinecone for the best semantic matches first; PostgreSQL then provides
+    # the richer profile data shown in the UI.
     pinecone_results = search_candidates(q, top_k=limit)
     if not pinecone_results:
         return []
@@ -474,7 +547,7 @@ def semantic_search(q: str, limit: int = 10):
     candidate_ids = [int(r["id"]) for r in pinecone_results]
     scores        = {int(r["id"]): r["score"] for r in pinecone_results}
 
-    # Fetch full profiles from PostgreSQL
+    # Fetch the display fields from PostgreSQL after vector similarity ranking.
     conn = get_connection()
     cur  = conn.cursor()
     cur.execute("""
@@ -487,7 +560,7 @@ def semantic_search(q: str, limit: int = 10):
     cur.close()
     conn.close()
 
-    # Return results sorted by Pinecone similarity score
+    # Preserve Pinecone ranking in the final response sent to the frontend.
     candidates = [{
         "id":       r[0],
         "name":     r[1],
