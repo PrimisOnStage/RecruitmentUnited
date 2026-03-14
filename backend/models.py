@@ -4,7 +4,20 @@ These schemas are shared by multiple ingestion sources so the backend, Llama
 extraction agent, and API validation all agree on the same basic structure.
 """
 
+from enum import Enum
+
 from pydantic import BaseModel, Field
+
+
+class CandidateStage(str, Enum):
+    """Allowed pipeline stages for candidate progression across the application."""
+
+    APPLIED = "applied"
+    SCREENING = "screening"
+    INTERVIEW = "interview"
+    OFFER = "offer"
+    HIRED = "hired"
+    REJECTED = "rejected"
 
 class WorkExp(BaseModel):
     """A simplified work-experience record used in metadata payloads."""
@@ -26,10 +39,10 @@ class CandidateSchema(BaseModel):
     country: str = Field(description="Country of residence", default="")
     location: str = Field(description="City or country", default="")
     current_role: str = Field(description="Most recent job title", default="")
-    experience_years: int = Field(description="Total years of experience", default=0)
-    skills: list[str] = Field(description="All technical and soft skills", default=[])
-    work_history: list[WorkExp] = Field(default=[])
-    education: list[Education] = Field(default=[])
+    experience_years: int = Field(description="Total years of experience", default=0, ge=0)
+    skills: list[str] = Field(description="All technical and soft skills", default_factory=list)
+    work_history: list[WorkExp] = Field(default_factory=list)
+    education: list[Education] = Field(default_factory=list)
 
 
 class LinkedInIngestSchema(BaseModel):
@@ -40,10 +53,10 @@ class LinkedInIngestSchema(BaseModel):
     country: str = Field(default="")
     location: str = Field(default="")
     current_role: str = Field(default="")
-    experience_years: int = Field(default=0)
-    skills: list[str] = Field(default=[])
-    work_history: list[WorkExp] = Field(default=[])
-    education: list[Education] = Field(default=[])
+    experience_years: int = Field(default=0, ge=0)
+    skills: list[str] = Field(default_factory=list)
+    work_history: list[WorkExp] = Field(default_factory=list)
+    education: list[Education] = Field(default_factory=list)
     profile_url: str = Field(default="")
     headline: str = Field(default="")
     about: str = Field(default="")

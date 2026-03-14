@@ -24,6 +24,18 @@ cd backend
 python -m uvicorn main:app --reload --port 8000
 ```
 
+## Run Tests
+```powershell
+python -m pytest
+```
+
+## Backend Layout
+- `backend/main.py`: FastAPI app entrypoint and router registration.
+- `backend/api/routes/`: route handlers grouped by feature area.
+- `backend/services/`: normalization, repository, and HR sync logic.
+- `backend/ingest/`: source-specific parsing/adapters.
+- `backend/processing/`: skill normalization and semantic search helpers.
+
 ## Run With Docker
 Use Docker Compose from the repository root to run Postgres + API + Streamlit frontend.
 

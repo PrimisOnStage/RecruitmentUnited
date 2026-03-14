@@ -13,4 +13,5 @@ pandas
 requests
 pinecone
 sentence-transformers
+pytest
 
