@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>TalentFlow AI - Project Documentation</title>
+  <link rel="stylesheet" href="documentation.css" />
+</head>
+<body>
+  <header class="hero" id="top">
+    <div class="container">
+      <p class="eyebrow">RecruitmentUnited / TalentUnify Hackathon</p>
+      <h1>TalentFlow AI Documentation</h1>
+      <p class="subtitle">
+        Unified project documentation based on the TalentUnify SaaS blueprint and product flow notes.
+      </p>
+      <div class="meta-grid">
+        <div class="meta-card">
+          <span class="meta-label">Team</span>
+          <strong>Team Nexus</strong>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Team Lead</span>
+          <strong>Sumeet</strong>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Date</span>
+          <strong>March 14, 2026</strong>
+        </div>
+        <div class="meta-card">
+          <span class="meta-label">Project Type</span>
+          <strong>AI Recruitment Micro SaaS</strong>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <main class="container layout">
+    <aside class="toc">
+      <h2>Contents</h2>
+      <nav>
+        <a href="#abstract">Abstract</a>
+        <a href="#problem">Problem Statement</a>
+        <a href="#objectives">Objectives</a>
+        <a href="#workflow">App Flow and Features</a>
+        <a href="#architecture">System Architecture</a>
+        <a href="#implementation">Implementation</a>
+        <a href="#results">Results and Demo</a>
+        <a href="#business">Business Model</a>
+        <a href="#challenges">Challenges</a>
+        <a href="#future">Future Scope</a>
+        <a href="#conclusion">Conclusion</a>
+        <a href="#references">References</a>
+      </nav>
+    </aside>
+
+    <section class="content">
+      <article class="card" id="abstract">
+        <h2>Abstract / Executive Summary</h2>
+        <p>
+          TalentFlow AI solves fragmented recruitment operations by unifying ingestion, parsing, scoring,
+          and communication workflows in one AI-driven platform. Recruiters can process candidates from
+          email, LinkedIn, HRMS systems, cloud files, and direct uploads while minimizing manual operations.
+        </p>
+        <div class="callout">
+          <strong>Expected Impact:</strong> near-zero manual data entry and over 50% faster hiring cycles.
+        </div>
+      </article>
+
+      <article class="card" id="problem">
+        <h2>Problem Statement</h2>
+        <ul>
+          <li>Recruitment teams rely on disconnected ATS, CRM, and communication tools.</li>
+          <li>Keyword-only filtering fails to capture semantic fit and context.</li>
+          <li>Non-standard resume formats increase screening overhead and errors.</li>
+          <li>Fraud and duplicate applications are difficult to detect across channels.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="objectives">
+        <h2>Objectives</h2>
+        <ul>
+          <li>Extract and normalize candidate data from unstructured and structured sources.</li>
+          <li>Standardize profile schemas for reliable search, matching, and analytics.</li>
+          <li>Rank candidates against job descriptions using semantic matching.</li>
+          <li>Provide recruiter controls for evaluation matrix editing and shortlist decisions.</li>
+          <li>Automate downstream actions like rejection emails and interview scheduling.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="workflow">
+        <h2>Application Flow and Core Features</h2>
+
+        <h3>Feature 1: Data Extraction</h3>
+        <p>
+          Candidate data is ingested via Gmail, Google Drive, BambooHR, LinkedIn, forms, and direct uploads.
+        </p>
+
+        <h3>Feature 2: Data Storage</h3>
+        <ul>
+          <li><strong>Structured JSON sources</strong> (HRMS, LinkedIn) are saved directly into Supabase PostgreSQL.</li>
+          <li><strong>Unstructured sources</strong> (Gmail, Drive, forms, uploads) are stored in Supabase S3.</li>
+        </ul>
+
+        <h3>Feature 3: Data Translation Layer</h3>
+        <div class="pipeline">
+          <div class="step">1. Ingestion</div>
+          <div class="step">2. Validation</div>
+          <div class="step">3. Formatting and Standardization</div>
+          <div class="step">4. Deduplication</div>
+        </div>
+        <p>
+          Files from storage are parsed with AI tooling into a common schema and written to PostgreSQL.
+          Missing fields are filled with placeholder values for schema stability, and candidate identity checks
+          prevent duplicate records by merging updates across channels.
+        </p>
+
+        <h3>Feature 4: Embeddings and Vector Indexing</h3>
+        <p>
+          Standardized candidate records are synced to Pinecone for semantic search, indexing, and relevance ranking.
+          Recruiters can export result sets in spreadsheet format.
+        </p>
+
+        <h3>Feature 5: Evaluation Matrix Engine</h3>
+        <p>
+          AI generates editable hiring matrices from job descriptions, including required skills, experience,
+          education, location, and salary preference constraints. Weighted scoring produces ranked candidate lists.
+        </p>
+        <ul>
+          <li>Rejected candidates are routed to n8n for automated rejection emails.</li>
+          <li>Shortlisted candidates proceed to scheduling (Calendly/Cal.com) or assessment workflows.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="architecture">
+        <h2>System Architecture</h2>
+        <pre class="diagram">Client UI -> FastAPI Core -> Async LLM Processing -> Relational + Vector Data Stores</pre>
+        <p>
+          The system uses modular frontend-backend separation with dedicated ingestion bridges and asynchronous
+          processing layers. API endpoints support authentication, parsing, candidate scoring, and semantic retrieval.
+        </p>
+      </article>
+
+      <article class="card" id="implementation">
+        <h2>Implementation Notes</h2>
+        <ul>
+          <li><strong>Backend:</strong> Python + FastAPI + SQLAlchemy with async processing patterns.</li>
+          <li><strong>Data:</strong> PostgreSQL (production-style), SQLite (development), vector index integration.</li>
+          <li><strong>AI Pipeline:</strong> Prompt-driven extraction, normalization, and schema mapping.</li>
+          <li><strong>Integrations:</strong> Gmail OAuth, LinkedIn simulator, BambooHR bridge, n8n automation.</li>
+          <li><strong>Frontend direction:</strong> modern dashboard with intelligence cards and funnel analytics.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="results">
+        <h2>Results and Demo Highlights</h2>
+        <ul>
+          <li>Functional prototype for parsing resumes and ranking candidates against job requirements.</li>
+          <li>Reported high match-quality behavior in test flows for technical roles.</li>
+          <li>End-to-end hiring path from ingestion to shortlist and communication automation.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="business">
+        <h2>Business Model</h2>
+        <ul>
+          <li>Tiered B2B SaaS pricing based on active jobs, parsing volume, and semantic query usage.</li>
+          <li>Enterprise add-ons for custom model adaptation and organization-specific hiring criteria.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="challenges">
+        <h2>Challenges Faced</h2>
+        <ul>
+          <li>Cross-format normalization for contact fields and skill naming variants.</li>
+          <li>Concurrency and API rate-limit handling for large batch uploads.</li>
+          <li>Balancing multi-stack dependencies across backend, UI, and integration tooling.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="future">
+        <h2>Future Scope</h2>
+        <ul>
+          <li>Predictive attrition modeling using historical tenure and outcome signals.</li>
+          <li>Video interview integrations with sentiment and behavioral analytics.</li>
+          <li>AI-generated personalized recruiter outreach sequences from candidate profiles.</li>
+        </ul>
+      </article>
+
+      <article class="card" id="conclusion">
+        <h2>Conclusion</h2>
+        <p>
+          TalentFlow AI demonstrates an end-to-end recruitment intelligence system that combines
+          omnichannel ingestion, AI normalization, semantic matching, and workflow automation.
+          The approach reduces operational friction while improving hiring focus on best-fit candidates.
+        </p>
+      </article>
+
+      <article class="card" id="references">
+        <h2>References</h2>
+        <ul>
+          <li>FastAPI Documentation</li>
+          <li>Next.js Framework Documentation</li>
+          <li>Tailwind CSS and shadcn/ui Documentation</li>
+          <li>Anthropic Prompt Engineering Guidelines</li>
+        </ul>
+      </article>
+    </section>
+  </main>
+
+  <footer class="footer">
+    <div class="container">
+      <p>TalentFlow AI Documentation - RecruitmentUnited Hackathon</p>
+      <a href="#top">Back to top</a>
+    </div>
+  </footer>
+</body>
+</html>
+
